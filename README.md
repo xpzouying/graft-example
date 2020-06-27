@@ -17,24 +17,55 @@ graft运行环境如下，
 
 ![init](./0_init.jpg)
 
+节点起来后，会与nats server建立初始化连接。具体的消息队列topic说明如下：
 
-## 流程分析
+1. **cluster.heartbeat：**
+   - 集群所有节点都订阅相同的topic，例如：graft.cluster.vote_request。
+   - 订阅该topic：接收集群中其他的节点的心跳。
+   - 向该topic发送心跳消息
+
+2. **vote_request：**
+   - 集群所有节点都订阅相同的topic，例如：graft.cluster.vote_request。
+   - 订阅该topic：接收其他节点发出的投票。
+   - 向该topic发送投票消息
+
+3. **node.response**
+   - 各个节点订阅各自的response topic：接收投票响应
+
+
+## raft流程介绍
+
+本节描述raft协议的大体流程介绍。
 
 ### 初始化
 
-该节主要分析集群初始化后，各类型节点在启动后的一系列操作。
+本节描述集群启动后的状态变化过程：
 
-节点启动后，会对各自做初始化操作，**其中最重要的是订阅nats中的2个topic，建立集群节点之间的通信。**
+*以Node1为例，描述获得Leader角色的状态变化*
 
-1. **heartbeat：**
-   - 接收集群中其他的节点的心跳。
-   - 集群所有节点都订阅相同的topic，例如：graft.cluster.heartbeat。
+1. Node1启动后，先以Follower角色启动。
+2. 此时，节点中没有Leader节点，也即没有收到Heartbeat消息，则会触发Term Timeout，转换为Candidate角色。
+3. 向集群其他节点发送选举投票消息。
+4. 接收到其他节点确认投票消息后，达到(N/2 + 1)选票数后，则标志为自己为Leader节点。
+5. Node1节点作为Leader节点，向集群中其他节点发送心跳消息来维持集群中的Leader角色。
 
-2. **vote_request：**
-   - 接收其他节点发送的投票。
-   - 集群所有节点都订阅相同的topic，例如：graft.cluster.vote_request。
 
-**初始化 - Candidate状态启动**
+### 新节点加入
+
+本节描述集群运转过程中，此时若有新节点加入。
+
+*以Node2为例，描述新节点加入后的状态变化*
+
+1. Node2启动后，先以Follower角色启动。
+2. 此时，集群中由于有Node1作为Leader节点在发送Heartbeat消息，则Node2会接收到Heartbeat的消息。
+3. Node2设置Node1为Leader节点，并设置状态为当前集群的状态。（term、log index等等）
+
+
+## graft代码分析
+
+本节描述graft源码中，详细的代码分析。
+
+**初始化 - 以Follower状态启动**
 
 假设集群刚被初始化，当前没有任何节点处于Leader节点状态，也即没有收到任何节点的心跳信息。
 
@@ -62,7 +93,7 @@ b. 从node1.response中获取其他节点的响应：
    4. 否则，继续等待其他节点的投票结果。
 
 c. 从cluster.vote_request中获取其他节点的投票请求：
-   1. 如果发起投票的请求term落后于node1的term，则发送拒绝response；
+   1. 如果发起投票的请求term落后于node1的term，则发送拒绝response；
    2. 如果对于当前term，node1已经投票给其他节点，则发送拒绝response；
    3. 如果node1接收到的其他节点的request中的term大于node1的term，则更新term到更新的term，并重置当前term的信息，包括：投票信息和leader信息。
    4. 如果node1已经是leader，则直接返回拒绝票。
